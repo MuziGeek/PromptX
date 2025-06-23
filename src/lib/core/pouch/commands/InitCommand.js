@@ -39,14 +39,11 @@ class InitCommand extends BasePouchCommand {
     } else if (args && typeof args[0] === 'string') {
       // CLI格式
       workingDirectory = args[0]
-    } else if (args && args.length > 0 && args[0]) {
-      // 兜底：直接取第一个参数
-      workingDirectory = args[0]
     }
-    
+
     let projectPath
-    
-    if (workingDirectory) {
+
+    if (workingDirectory && typeof workingDirectory === 'string') {
       // AI提供了工作目录，使用AI提供的路径
       projectPath = path.resolve(workingDirectory)
       
@@ -68,18 +65,14 @@ class InitCommand extends BasePouchCommand {
     } else {
       // AI没有提供工作目录，检查是否已有保存的项目
       const savedProject = await this.currentProjectManager.getCurrentProject()
-      
+
       if (savedProject) {
         // 使用之前保存的项目路径
         projectPath = savedProject
       } else {
-        // 没有保存的项目，要求AI提供
-        return `🎯 PromptX需要知道当前项目的工作目录。
-
-请在调用此工具时提供 workingDirectory 参数，例如：
-- workingDirectory: "/Users/sean/WorkSpaces/DeepracticeProjects/PromptX"
-
-💡 你当前工作在哪个项目目录？请提供完整的绝对路径。`
+        // 没有保存的项目，使用当前工作目录作为默认值
+        projectPath = process.cwd()
+        logger.info(`[InitCommand] 使用当前工作目录作为项目路径: ${projectPath}`)
       }
     }
 

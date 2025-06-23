@@ -114,27 +114,71 @@ class ActionCommand extends BasePouchCommand {
   }
 
   /**
+   * 加载GitHub角色内容（带重试机制）
+   */
+  async loadGitHubRoleWithRetry(githubReference, roleId) {
+    try {
+      logger.debug(`[ActionCommand] 加载GitHub角色: ${githubReference}`)
+
+      // 使用ResourceManager加载GitHub资源
+      const result = await this.resourceManager.loadResourceByProtocol(githubReference)
+
+      if (!result || typeof result !== 'string') {
+        throw new Error(`GitHub角色加载失败: 返回内容无效`)
+      }
+
+      logger.debug(`[ActionCommand] GitHub角色加载成功: ${result.length} 字符`)
+      return result
+
+    } catch (error) {
+      logger.error(`[ActionCommand] GitHub角色加载失败: ${error.message}`)
+
+      // 重试机制：尝试通过ResourceManager的loadResource方法
+      try {
+        logger.debug(`[ActionCommand] 尝试备用加载方法...`)
+        const fallbackResult = await this.resourceManager.loadResource(`@!role://${roleId}`)
+
+        if (fallbackResult.success && fallbackResult.content) {
+          logger.debug(`[ActionCommand] 备用方法加载成功: ${fallbackResult.content.length} 字符`)
+          return fallbackResult.content
+        }
+      } catch (fallbackError) {
+        logger.error(`[ActionCommand] 备用加载方法也失败: ${fallbackError.message}`)
+      }
+
+      throw new Error(`无法加载GitHub角色 ${roleId}: ${error.message}`)
+    }
+  }
+
+  /**
    * 分析角色文件，提取完整的角色语义（@引用 + 直接内容）
    */
   async analyzeRoleDependencies (roleInfo) {
     try {
-      // 处理文件路径，将@package://和@project://前缀替换为实际路径
+      // 处理文件路径，将@package://、@project://和@github://前缀替换为实际路径
       let filePath = roleInfo.file
+      let roleContent
+
       if (filePath.startsWith('@package://')) {
         const PackageProtocol = require('../../resource/protocols/PackageProtocol')
         const packageProtocol = new PackageProtocol()
         const relativePath = filePath.replace('@package://', '')
         filePath = await packageProtocol.resolvePath(relativePath)
+        roleContent = await fs.readFile(filePath, 'utf-8')
       } else if (filePath.startsWith('@project://')) {
         // 对于@project://路径，使用ProjectProtocol解析
         const ProjectProtocol = require('../../resource/protocols/ProjectProtocol')
         const projectProtocol = new ProjectProtocol()
         const relativePath = filePath.replace('@project://', '')
         filePath = await projectProtocol.resolvePath(relativePath)
+        roleContent = await fs.readFile(filePath, 'utf-8')
+      } else if (filePath.startsWith('@github://')) {
+        // 对于@github://路径，使用ResourceManager加载内容（带重试机制）
+        roleContent = await this.loadGitHubRoleWithRetry(filePath, roleInfo.id)
+      } else {
+        // 对于其他路径，直接读取文件
+        roleContent = await fs.readFile(filePath, 'utf-8')
       }
-
-      // 读取角色文件内容
-      const roleContent = await fs.readFile(filePath, 'utf-8')
       
       // 使用DPMLContentParser解析完整的角色语义
       const roleSemantics = this.dpmlParser.parseRoleDocument(roleContent)

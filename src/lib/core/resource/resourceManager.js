@@ -7,6 +7,7 @@ const logger = require('../../utils/logger')
 // 导入协议处理器
 const PackageProtocol = require('./protocols/PackageProtocol')
 const ProjectProtocol = require('./protocols/ProjectProtocol')
+const GitHubProtocol = require('./protocols/GitHubProtocol')
 const RoleProtocol = require('./protocols/RoleProtocol')
 const ThoughtProtocol = require('./protocols/ThoughtProtocol')
 const ExecutionProtocol = require('./protocols/ExecutionProtocol')
@@ -35,7 +36,10 @@ class ResourceManager {
   initializeProtocols() {
     // 基础协议 - 直接文件系统映射
     this.protocols.set('package', new PackageProtocol())
-    this.protocols.set('project', new ProjectProtocol()) 
+    this.protocols.set('project', new ProjectProtocol())
+
+    // 云端协议 - 远程资源访问
+    this.protocols.set('github', new GitHubProtocol())
 
     // 逻辑协议 - 需要注册表查询
     this.protocols.set('role', new RoleProtocol())
@@ -80,21 +84,36 @@ class ResourceManager {
   async populateRegistryData() {
     // 清空现有数据
     this.registryData.clear()
-    
+    logger.debug('[ResourceManager] Starting registry population')
+
     // 从各个发现器获取RegistryData并合并
     for (const discovery of this.discoveryManager.discoveries) {
+      logger.debug(`[ResourceManager] Processing discovery: ${discovery.source}`)
       try {
         if (typeof discovery.getRegistryData === 'function') {
+          logger.debug(`[ResourceManager] Calling getRegistryData for ${discovery.source}`)
           const registryData = await discovery.getRegistryData()
+          logger.debug(`[ResourceManager] Got registry data from ${discovery.source}: ${registryData?.resources?.length || 0} resources`)
+
           if (registryData && registryData.resources) {
+            const beforeCount = this.registryData.size
             // 合并资源到主注册表
             this.registryData.merge(registryData, true) // 允许覆盖
+            const afterCount = this.registryData.size
+            logger.debug(`[ResourceManager] Merged ${discovery.source}: ${beforeCount} -> ${afterCount} resources`)
+          } else {
+            logger.warn(`[ResourceManager] Invalid registry data from ${discovery.source}`)
           }
+        } else {
+          logger.warn(`[ResourceManager] Discovery ${discovery.source} does not have getRegistryData method`)
         }
       } catch (error) {
         logger.warn(`Failed to get RegistryData from ${discovery.source}: ${error.message}`)
+        logger.warn(`Stack: ${error.stack}`)
       }
     }
+
+    logger.debug(`[ResourceManager] Registry population complete: ${this.registryData.size} total resources`)
   }
 
   /**
@@ -161,21 +180,39 @@ class ResourceManager {
       // 处理@!开头的DPML格式（如 @!role://java-developer）
       if (resourceId.startsWith('@!')) {
         const parsed = this.protocolParser.parse(resourceId)
-        
+
         // 从RegistryData查找资源
         const resourceData = this.registryData.findResourceById(parsed.path, parsed.protocol)
         if (!resourceData) {
           throw new Error(`Resource not found: ${parsed.protocol}:${parsed.path}`)
         }
-        
+
         // 通过协议解析加载内容
         const content = await this.loadResourceByProtocol(resourceData.reference)
-        
+
         return {
           success: true,
           content,
           resourceId,
           reference: resourceData.reference
+        }
+      }
+
+      // 处理直接的协议URL（如 @github://owner/repo@branch/path）
+      if (resourceId.startsWith('@')) {
+        try {
+          // 直接通过协议解析加载内容
+          const content = await this.loadResourceByProtocol(resourceId)
+
+          return {
+            success: true,
+            content,
+            resourceId,
+            reference: resourceId
+          }
+        } catch (error) {
+          // 如果直接协议解析失败，继续尝试其他格式
+          logger.debug(`Direct protocol parsing failed for ${resourceId}: ${error.message}`)
         }
       }
       

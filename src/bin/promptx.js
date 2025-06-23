@@ -96,6 +96,20 @@ program
     }
   })
 
+// GitHub命令
+program
+  .command('github <subCommand> [args...]')
+  .description('🔧 GitHub集成管理 - 配置、测试和管理GitHub仓库中的角色资源')
+  .action(async (subCommand, args, options) => {
+    try {
+      const allArgs = [subCommand, ...args]
+      await cli.execute('github', allArgs)
+    } catch (error) {
+      console.error(`❌ GitHub命令执行失败: ${error.message}`)
+      process.exit(1)
+    }
+  })
+
 // MCP Server命令
 program
   .command('mcp-server')

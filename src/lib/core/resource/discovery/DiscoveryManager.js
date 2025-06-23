@@ -1,5 +1,6 @@
 const PackageDiscovery = require('./PackageDiscovery')
 const ProjectDiscovery = require('./ProjectDiscovery')
+const GitHubDiscovery = require('./GitHubDiscovery')
 const logger = require('../../../utils/logger')
 
 /**
@@ -20,10 +21,11 @@ class DiscoveryManager {
     if (discoveries) {
       this.discoveries = [...discoveries]
     } else {
-      // 默认发现器配置：只包含包级和项目级发现
+      // 默认发现器配置：包含包级、项目级和GitHub发现
       this.discoveries = [
         new PackageDiscovery(),  // 优先级: 1
-        new ProjectDiscovery()   // 优先级: 2
+        new ProjectDiscovery(),  // 优先级: 2
+        new GitHubDiscovery()    // 优先级: 3
       ]
     }
 
@@ -230,7 +232,7 @@ class DiscoveryManager {
     }
 
     // 第二阶段：处理优先级覆盖 - 高优先级的无前缀版本覆盖低优先级的
-    const priorityLevels = ['package', 'project', 'user'] // 优先级：package < project < user
+    const priorityLevels = ['package', 'project', 'github', 'user'] // 优先级：package < project < github < user
     
     // 为每个基础资源ID找到最高优先级的版本
     const baseResourceMap = new Map() // baseId -> {source, reference, priority}

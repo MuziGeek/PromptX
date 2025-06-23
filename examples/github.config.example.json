@@ -1,0 +1,81 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "cache": {
+    "enabled": true,
+    "ttl": 3600,
+    "maxSize": 100
+  },
+  "auth": {
+    "token": "ghp_your_personal_access_token_here",
+    "type": "token"
+  },
+  "repositories": [
+    {
+      "owner": "myorg",
+      "name": "promptx-roles-prod",
+      "branch": "main",
+      "enabled": true,
+      "rolePrefix": "roles/",
+      "priority": 200,
+      "private": true,
+      "token": "",
+      "metadata": {
+        "description": "生产环境角色库",
+        "environment": "production",
+        "createdAt": "2024-01-01T00:00:00.000Z",
+        "maintainer": "team@company.com"
+      }
+    },
+    {
+      "owner": "myorg",
+      "name": "promptx-roles-dev",
+      "branch": "develop",
+      "enabled": true,
+      "rolePrefix": "roles/",
+      "priority": 150,
+      "private": true,
+      "token": "ghp_dev_specific_token_here",
+      "metadata": {
+        "description": "开发环境角色库",
+        "environment": "development",
+        "createdAt": "2024-01-01T00:00:00.000Z",
+        "maintainer": "dev-team@company.com"
+      }
+    },
+    {
+      "owner": "opensource-community",
+      "name": "public-promptx-roles",
+      "branch": "main",
+      "enabled": true,
+      "rolePrefix": "community-roles/",
+      "priority": 100,
+      "private": false,
+      "token": "",
+      "metadata": {
+        "description": "开源社区角色库",
+        "environment": "community",
+        "createdAt": "2024-01-01T00:00:00.000Z",
+        "maintainer": "community@opensource.org",
+        "license": "MIT"
+      }
+    },
+    {
+      "owner": "myusername",
+      "name": "personal-roles",
+      "branch": "main",
+      "enabled": false,
+      "rolePrefix": "my-roles/",
+      "priority": 50,
+      "private": false,
+      "token": "",
+      "metadata": {
+        "description": "个人角色实验库",
+        "environment": "personal",
+        "createdAt": "2024-01-01T00:00:00.000Z",
+        "maintainer": "me@example.com",
+        "note": "个人实验性角色，暂时禁用"
+      }
+    }
+  ]
+}

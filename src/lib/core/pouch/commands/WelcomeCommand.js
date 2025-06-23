@@ -154,8 +154,10 @@ class WelcomeCommand extends BasePouchCommand {
         return '📦 系统角色'
       case 'project':
         return '🏗️ 项目角色'
+      case 'github':
+        return '🌐 GitHub角色'
       case 'user':
-        return '�� 用户角色'
+        return '👤 用户角色'
       case 'merged':
         return '📦 系统角色' // merged来源的资源主要来自package
       case 'fallback':
@@ -192,7 +194,7 @@ class WelcomeCommand extends BasePouchCommand {
     let roleIndex = 1
     
     // 优先显示系统角色
-    const sourceOrder = ['package', 'merged', 'project', 'user', 'fallback', 'unknown']
+    const sourceOrder = ['package', 'merged', 'project', 'github', 'user', 'fallback', 'unknown']
     
     for (const source of sourceOrder) {
       if (!rolesBySource[source] || rolesBySource[source].length === 0) continue

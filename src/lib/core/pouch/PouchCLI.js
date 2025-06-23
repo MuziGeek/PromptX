@@ -31,7 +31,8 @@ class PouchCLI {
       learn: commands.LearnCommand,
       recall: commands.RecallCommand,
       remember: commands.RememberCommand,
-      dacp: commands.DACPCommand
+      dacp: commands.DACPCommand,
+      github: commands.GitHubCommand
     })
 
     // 将命令注册到状态机

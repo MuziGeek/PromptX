@@ -225,9 +225,18 @@ class ResourceProtocolParser {
 
     if (colonIndex === -1) return false
 
+    const protocol = withoutSemantics.substring(0, colonIndex)
     const afterColon = withoutSemantics.substring(colonIndex + 1)
 
+    // 特殊处理：GitHub协议中的@符号是分支标识符，不是嵌套引用
+    if (protocol === 'github') {
+      // GitHub URL格式：github://owner/repo@branch/path 或 github://owner/repo/path
+      // 这里的@是分支标识符，不是嵌套引用标识符
+      return false
+    }
+
     // 检查是否包含内层引用 (@protocol: 或 protocol:)
+    // 但要排除GitHub等特殊协议的情况
     return afterColon.includes('@') || afterColon.includes('://')
   }
 
