@@ -9,7 +9,6 @@ const LearnCommand = require('./LearnCommand')
 const RecallCommand = require('./RecallCommand')
 const RememberCommand = require('./RememberCommand')
 const DACPCommand = require('./DACPCommand')
-// const COSCommand = require('./COSCommand') // Temporarily disabled due to adapter issue
 const GitHubCommand = require('./GitHubCommand')
 
 module.exports = {
@@ -20,6 +19,5 @@ module.exports = {
   RecallCommand,
   RememberCommand,
   DACPCommand,
-  // COSCommand, // Temporarily disabled
   GitHubCommand
 }

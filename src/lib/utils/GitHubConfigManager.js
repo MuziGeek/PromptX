@@ -73,14 +73,21 @@ class GitHubConfigManager {
   async validateConnection(repoKey = null) {
     try {
       const GitHubAdapter = require('../adapters/GitHubAdapter')
-      const githubAdapter = new GitHubAdapter()
-      
+      const githubAdapter = new GitHubAdapter(this.getConfig())
+
       if (repoKey) {
         const repoConfig = this.getRepositoryConfig(repoKey)
         if (!repoConfig) {
           throw new Error(`仓库配置不存在: ${repoKey}`)
         }
-        return await githubAdapter.testConnection(repoConfig)
+
+        // 确保仓库配置包含token
+        const enrichedRepoConfig = {
+          ...repoConfig,
+          token: repoConfig.token || this.getAccessToken(repoConfig)
+        }
+
+        return await githubAdapter.testConnection(enrichedRepoConfig)
       } else {
         // 测试所有启用的仓库
         const results = {}

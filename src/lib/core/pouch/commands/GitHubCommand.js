@@ -3,6 +3,10 @@ const GitHubConfigManager = require('../../../utils/GitHubConfigManager')
 const GitHubProtocol = require('../../resource/protocols/GitHubProtocol')
 const GitHubDiscovery = require('../../resource/discovery/GitHubDiscovery')
 const GitHubAdapter = require('../../../adapters/GitHubAdapter')
+const ProjectDiscovery = require('../../resource/discovery/ProjectDiscovery')
+const { getDirectoryService } = require('../../../utils/DirectoryService')
+const fs = require('fs-extra')
+const path = require('path')
 const logger = require('../../../utils/logger')
 
 /**
@@ -16,6 +20,8 @@ class GitHubCommand extends BasePouchCommand {
     this.githubProtocol = new GitHubProtocol()
     this.githubDiscovery = new GitHubDiscovery()
     this.githubAdapter = new GitHubAdapter()
+    this.projectDiscovery = new ProjectDiscovery()
+    this.directoryService = getDirectoryService()
   }
 
   /**
@@ -34,7 +40,7 @@ class GitHubCommand extends BasePouchCommand {
   async getPATEOAS() {
     return {
       currentState: 'github_management',
-      availableTransitions: ['config', 'test', 'discover', 'cache', 'stats'],
+      availableTransitions: ['config', 'test', 'discover', 'cache', 'stats', 'upload'],
       nextActions: [
         {
           name: 'GitHub配置管理',
@@ -53,11 +59,17 @@ class GitHubCommand extends BasePouchCommand {
           description: '扫描GitHub仓库中的角色资源',
           method: 'promptx github discover',
           priority: 'medium'
+        },
+        {
+          name: 'GitHub角色上传',
+          description: '上传项目级角色到GitHub仓库',
+          method: 'promptx github upload <role-name>',
+          priority: 'medium'
         }
       ],
       metadata: {
         systemVersion: 'GitHub集成 v1.0',
-        supportedOperations: ['config', 'test', 'discover', 'cache', 'stats']
+        supportedOperations: ['config', 'test', 'discover', 'cache', 'stats', 'upload']
       }
     }
   }
@@ -86,6 +98,8 @@ class GitHubCommand extends BasePouchCommand {
           return await this.handleRepo(subArgs)
         case 'auth':
           return await this.handleAuth(subArgs)
+        case 'upload':
+          return await this.handleUpload(subArgs)
         default:
           return this.getHelp()
       }
@@ -431,9 +445,10 @@ class GitHubCommand extends BasePouchCommand {
 
 **子命令**:
 - \`config\` - 配置管理
-- \`test\` - 连接测试  
+- \`test\` - 连接测试
 - \`cache\` - 缓存管理
 - \`discover\` - 资源发现
+- \`upload\` - 角色上传
 - \`stats\` - 统计信息
 - \`repo\` - 仓库管理
 - \`auth\` - 认证管理
@@ -443,6 +458,7 @@ class GitHubCommand extends BasePouchCommand {
 - \`promptx github test\` - 测试所有仓库连接
 - \`promptx github cache clear\` - 清空缓存
 - \`promptx github discover\` - 发现GitHub资源
+- \`promptx github upload <角色名> [仓库]\` - 上传角色到GitHub
 
 使用 \`promptx github <子命令>\` 查看具体子命令的帮助信息。`
   }
@@ -484,6 +500,442 @@ class GitHubCommand extends BasePouchCommand {
 - \`promptx github cache stats\`
 - \`promptx github cache clear\`
 - \`promptx github cache clear owner/repo\``
+  }
+
+  /**
+   * 处理角色上传命令
+   * @param {Array} args - 命令参数
+   * @private
+   */
+  async handleUpload(args) {
+    const [roleName, repoKey, ...options] = args
+
+    try {
+      logger.debug(`[GitHubCommand] 开始处理上传命令: roleName=${roleName}, repoKey=${repoKey}`)
+
+      // 初始化配置管理器
+      await this.configManager.initialize()
+
+      if (!this.configManager.initialized) {
+        return '❌ GitHub配置未初始化，请先运行 `promptx github config init`'
+      }
+
+      const config = this.configManager.getConfig()
+      if (!config.enabled) {
+        return '❌ GitHub功能已禁用，请在配置中启用'
+      }
+
+      // 如果没有指定角色名，显示可用角色列表
+      if (!roleName) {
+        logger.debug(`[GitHubCommand] 显示可用角色列表`)
+        return await this.showAvailableRoles()
+      }
+
+      // 如果没有指定仓库，显示可用仓库列表
+      if (!repoKey) {
+        return await this.showAvailableRepositories(roleName)
+      }
+
+      // 验证仓库配置
+      const repoConfig = this.configManager.getRepositoryConfig(repoKey)
+      if (!repoConfig) {
+        return `❌ 仓库 "${repoKey}" 未在配置中找到`
+      }
+
+      if (!repoConfig.enabled) {
+        return `❌ 仓库 "${repoKey}" 已禁用`
+      }
+
+      // 简化权限检查 - 用户已确认有写入权限
+      logger.debug(`[GitHubCommand] 跳过权限检查，直接进行上传 (用户已确认有权限)`)
+
+      // 可选：简单验证仓库存在性
+      try {
+        const repoConfig = this.configManager.getRepositoryConfig(repoKey)
+        if (!repoConfig) {
+          return `❌ 仓库 "${repoKey}" 未在配置中找到`
+        }
+
+        logger.info(`[GitHubCommand] 仓库配置验证成功: ${repoKey}`)
+
+      } catch (error) {
+        logger.error(`[GitHubCommand] 仓库配置验证失败: ${error.message}`)
+        return `❌ 仓库配置验证失败: ${error.message}`
+      }
+
+      // 执行简化的上传流程
+      return await this.performSimpleUpload(roleName, repoConfig)
+
+    } catch (error) {
+      logger.error(`[GitHubCommand] 上传失败: ${error.message}`)
+      return `❌ 上传失败: ${error.message}`
+    }
+  }
+
+  /**
+   * 显示可用角色列表
+   * @private
+   */
+  async showAvailableRoles() {
+    try {
+      logger.debug('[GitHubCommand] 显示可用角色列表')
+
+      // 超级简化实现
+      const resourcesDir = path.join(process.cwd(), '.promptx', 'resource', 'domain')
+
+      if (!await fs.pathExists(resourcesDir)) {
+        return `❌ 角色目录不存在: .promptx/resource/domain/`
+      }
+
+      const items = await fs.readdir(resourcesDir)
+      const roles = []
+
+      for (const item of items) {
+        const itemPath = path.join(resourcesDir, item)
+        try {
+          const stat = await fs.stat(itemPath)
+          if (stat.isDirectory()) {
+            roles.push(item)
+          }
+        } catch (error) {
+          // 忽略错误，继续处理下一个
+        }
+      }
+
+      if (roles.length === 0) {
+        return `⚠️ 没有找到任何角色`
+      }
+
+      let output = `📋 **可上传的角色** (${roles.length}个):\n\n`
+
+      for (const role of roles) {
+        output += `📝 ${role}\n`
+      }
+
+      output += `\n💡 **使用**: \`promptx github upload <角色名> MuziGeeK/promptX_Role\``
+
+      return output
+
+    } catch (error) {
+      logger.error(`[GitHubCommand] 角色列表失败: ${error.message}`)
+      return `❌ 获取角色列表失败: ${error.message}`
+    }
+  }
+
+  /**
+   * 执行简化的上传流程
+   * @param {string} roleName - 角色名
+   * @param {Object} repoConfig - 仓库配置
+   * @private
+   */
+  async performSimpleUpload(roleName, repoConfig) {
+    try {
+      logger.debug(`[GitHubCommand] 执行简化上传: ${roleName}`)
+
+      // 检查角色文件是否存在
+      const roleDir = path.join(process.cwd(), '.promptx', 'resource', 'domain', roleName)
+      const roleFile = path.join(roleDir, `${roleName}.role.md`)
+
+      if (!await fs.pathExists(roleFile)) {
+        return `❌ 角色文件不存在: ${roleFile}`
+      }
+
+      // 读取角色文件内容
+      const content = await fs.readFile(roleFile, 'utf-8')
+
+      // 使用GitHubAdapter上传文件（它会自动处理SHA值）
+      const targetPath = `roles/${roleName}/${roleName}.role.md`
+      const message = `Upload ${roleName} role via PromptX`
+
+      logger.info(`[GitHubCommand] 上传文件: ${targetPath}`)
+
+      const result = await this.githubAdapter.createOrUpdateFile(
+        repoConfig,
+        targetPath,
+        content,
+        message,
+        { branch: repoConfig.branch || 'main' }
+      )
+
+      return `✅ **上传成功!**
+
+📄 **文件**: ${targetPath}
+🔗 **查看**: https://github.com/${repoConfig.owner}/${repoConfig.name}/blob/${repoConfig.branch || 'main'}/${targetPath}
+🔗 **提交**: ${result.commit.url}
+
+🎉 角色 "${roleName}" 已成功上传到 ${repoConfig.owner}/${repoConfig.name}!
+📝 **操作**: ${result.action === 'created' ? '新建文件' : '更新文件'}`
+
+    } catch (error) {
+      logger.error(`[GitHubCommand] 简化上传失败: ${error.message}`)
+      return `❌ 上传失败: ${error.message}`
+    }
+  }
+
+  /**
+   * 显示可用仓库列表
+   * @param {string} roleName - 角色名
+   * @private
+   */
+  async showAvailableRepositories(roleName) {
+    try {
+      const enabledRepos = this.configManager.getEnabledRepositories()
+
+      if (enabledRepos.length === 0) {
+        return `❌ 没有启用的仓库配置
+
+💡 **配置仓库的方法**:
+1. 编辑配置文件: .promptx/github.config.json
+2. 添加仓库配置并设置 enabled: true
+3. 运行 \`promptx github test\` 验证连接
+
+📖 详细说明请参考: docs/github-integration-guide.md`
+      }
+
+      let output = `📋 **可用的目标仓库** (角色: ${roleName})\n\n`
+
+      for (const repo of enabledRepos) {
+        const repoKey = `${repo.owner}/${repo.name}`
+        output += `📁 **${repoKey}**\n`
+        output += `  - 分支: ${repo.branch || 'main'}\n`
+        output += `  - 类型: ${repo.private ? '🔒 私有' : '🌐 公开'}\n`
+        output += `  - 角色前缀: ${repo.rolePrefix || '无'}\n`
+        output += `  - 优先级: ${repo.priority}\n\n`
+      }
+
+      output += `💡 **使用方法**: \`promptx github upload ${roleName} <仓库>\`\n`
+      output += `📖 **示例**: \`promptx github upload ${roleName} ${enabledRepos[0].owner}/${enabledRepos[0].name}\``
+
+      return output
+
+    } catch (error) {
+      return `❌ 获取仓库列表失败: ${error.message}`
+    }
+  }
+
+  /**
+   * 上传角色文件
+   * @param {string} roleName - 角色名
+   * @param {Object} repoConfig - 仓库配置
+   * @param {Array} options - 选项
+   * @private
+   */
+  async uploadRoleFiles(roleName, repoConfig, options = []) {
+    try {
+      logger.debug(`[GitHubCommand] 开始上传角色文件: ${roleName}`)
+
+      // 简化路径获取
+      const roleDir = path.join(process.cwd(), '.promptx', 'resource', 'domain', roleName)
+
+      if (!await fs.pathExists(roleDir)) {
+        return `❌ 角色 "${roleName}" 不存在于项目中`
+      }
+
+      // 扫描角色文件
+      const files = await this.scanRoleFiles(roleDir, roleName)
+
+      if (files.totalFiles === 0) {
+        return `❌ 角色 "${roleName}" 没有找到任何文件`
+      }
+
+      // 准备上传文件列表
+      const uploadFiles = []
+      // 清理路径前缀，确保没有双斜杠
+      const rolePrefix = repoConfig.rolePrefix ? repoConfig.rolePrefix.replace(/\/$/, '') : 'roles'
+      const baseTargetPath = `${rolePrefix}/${roleName}`
+
+      // 添加角色文件
+      if (files.role) {
+        uploadFiles.push({
+          path: `${baseTargetPath}/${roleName}.role.md`,
+          content: files.role.content,
+          message: `Add/Update role: ${roleName}`
+        })
+      }
+
+      // 添加思维文件
+      for (const thought of files.thoughts) {
+        uploadFiles.push({
+          path: `${baseTargetPath}/${thought.name}`,
+          content: thought.content,
+          message: `Add/Update thought for ${roleName}: ${thought.name}`
+        })
+      }
+
+      // 添加执行文件
+      for (const execution of files.executions) {
+        uploadFiles.push({
+          path: `${baseTargetPath}/${execution.name}`,
+          content: execution.content,
+          message: `Add/Update execution for ${roleName}: ${execution.name}`
+        })
+      }
+
+      // 添加知识文件
+      for (const knowledge of files.knowledge) {
+        uploadFiles.push({
+          path: `${baseTargetPath}/${knowledge.name}`,
+          content: knowledge.content,
+          message: `Add/Update knowledge for ${roleName}: ${knowledge.name}`
+        })
+      }
+
+      // 解析选项
+      const uploadOptions = this.parseUploadOptions(options)
+
+      // 显示上传预览
+      let output = `🚀 **准备上传角色: ${roleName}**\n\n`
+      output += `📁 **目标仓库**: ${repoConfig.owner}/${repoConfig.name}\n`
+      output += `🌿 **目标分支**: ${uploadOptions.branch || repoConfig.branch || 'main'}\n`
+      output += `📂 **目标路径**: ${baseTargetPath}/\n`
+      output += `📄 **文件数量**: ${uploadFiles.length} 个\n\n`
+
+      output += `📋 **文件列表**:\n`
+      for (const file of uploadFiles) {
+        output += `  - ${file.path}\n`
+      }
+      output += '\n'
+
+      // 执行上传
+      output += `⏳ **开始上传...**\n\n`
+
+      let uploadResult
+      try {
+        uploadResult = await this.githubAdapter.uploadFiles(
+          repoConfig,
+          uploadFiles,
+          {
+            branch: uploadOptions.branch || repoConfig.branch || 'main',
+            baseMessage: `Upload role "${roleName}" via PromptX`
+          }
+        )
+      } catch (error) {
+        logger.error(`[GitHubCommand] 批量上传失败: ${error.message}`)
+        return `❌ 上传过程中发生错误: ${error.message}
+
+💡 **可能的解决方案**:
+1. 检查网络连接是否稳定
+2. 确认GitHub服务是否正常
+3. 验证token权限是否足够
+4. 检查仓库是否存在且可访问`
+      }
+
+      // 显示上传结果
+      output += `✅ **上传完成!**\n\n`
+      output += `📊 **结果统计**:\n`
+      output += `  - 成功: ${uploadResult.success.length} 个文件\n`
+      output += `  - 失败: ${uploadResult.failed.length} 个文件\n`
+      output += `  - 总计: ${uploadResult.total} 个文件\n\n`
+
+      if (uploadResult.success.length > 0) {
+        output += `✅ **成功上传的文件**:\n`
+        for (const file of uploadResult.success) {
+          output += `  - ${file.path} (${file.action})\n`
+        }
+        output += '\n'
+      }
+
+      if (uploadResult.failed.length > 0) {
+        output += `❌ **上传失败的文件**:\n`
+        for (const file of uploadResult.failed) {
+          output += `  - ${file.path}: ${file.error}\n`
+        }
+        output += '\n'
+      }
+
+      // 添加查看链接
+      if (uploadResult.success.length > 0) {
+        const firstCommit = uploadResult.success[0].commit
+        if (firstCommit && firstCommit.url) {
+          output += `🔗 **查看提交**: ${firstCommit.url}\n`
+        }
+
+        const repoUrl = `https://github.com/${repoConfig.owner}/${repoConfig.name}/tree/${uploadOptions.branch || repoConfig.branch || 'main'}/${baseTargetPath}`
+        output += `🔗 **查看角色**: ${repoUrl}\n`
+      }
+
+      return output
+
+    } catch (error) {
+      logger.error(`[GitHubCommand] 上传角色文件失败: ${error.message}`)
+      return `❌ 上传失败: ${error.message}`
+    }
+  }
+
+  /**
+   * 扫描角色文件
+   * @param {string} roleDir - 角色目录
+   * @param {string} roleName - 角色名
+   * @private
+   */
+  async scanRoleFiles(roleDir, roleName) {
+    const files = {
+      role: null,
+      thoughts: [],
+      executions: [],
+      knowledge: [],
+      totalFiles: 0
+    }
+
+    try {
+      const items = await fs.readdir(roleDir)
+
+      for (const item of items) {
+        const itemPath = path.join(roleDir, item)
+        const stat = await fs.stat(itemPath)
+
+        if (stat.isFile()) {
+          const content = await fs.readFile(itemPath, 'utf-8')
+
+          if (item === `${roleName}.role.md`) {
+            files.role = { name: item, content }
+            files.totalFiles++
+          } else if (item.endsWith('.thought.md')) {
+            files.thoughts.push({ name: item, content })
+            files.totalFiles++
+          } else if (item.endsWith('.execution.md')) {
+            files.executions.push({ name: item, content })
+            files.totalFiles++
+          } else if (item.endsWith('.knowledge.md')) {
+            files.knowledge.push({ name: item, content })
+            files.totalFiles++
+          } else if (item.endsWith('.md')) {
+            // 其他markdown文件也作为知识文件处理
+            files.knowledge.push({ name: item, content })
+            files.totalFiles++
+          }
+        }
+      }
+
+    } catch (error) {
+      logger.error(`[GitHubCommand] 扫描角色文件失败: ${error.message}`)
+    }
+
+    return files
+  }
+
+  /**
+   * 解析上传选项
+   * @param {Array} options - 选项数组
+   * @private
+   */
+  parseUploadOptions(options) {
+    const parsed = {}
+
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i]
+
+      if (option === '--branch' || option === '-b') {
+        parsed.branch = options[i + 1]
+        i++ // 跳过下一个参数
+      } else if (option === '--force' || option === '-f') {
+        parsed.force = true
+      } else if (option === '--dry-run') {
+        parsed.dryRun = true
+      }
+    }
+
+    return parsed
   }
 }
 

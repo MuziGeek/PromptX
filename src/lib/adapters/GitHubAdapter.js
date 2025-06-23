@@ -9,6 +9,13 @@ class GitHubAdapter {
   constructor(globalConfig = null) {
     this.clients = new Map() // repoKey -> Octokit client 映射
     this.globalConfig = globalConfig
+
+    // 调试信息
+    if (globalConfig) {
+      logger.debug(`[GitHubAdapter] 构造函数 - 接收到全局配置，token: ${globalConfig.auth?.token ? '***' : 'none'}`)
+    } else {
+      logger.debug(`[GitHubAdapter] 构造函数 - 没有全局配置`)
+    }
   }
 
   /**
@@ -22,6 +29,11 @@ class GitHubAdapter {
     const globalToken = this.globalConfig?.auth?.token || ''
     const token = repoConfig.token || globalToken || ''
     const clientKey = `${repoKey}-${token ? 'auth' : 'public'}`
+
+    // 调试信息
+    logger.debug(`[GitHubAdapter] getClient - repoConfig.token: ${repoConfig.token ? '***' : 'none'}`)
+    logger.debug(`[GitHubAdapter] getClient - globalToken: ${globalToken ? '***' : 'none'}`)
+    logger.debug(`[GitHubAdapter] getClient - final token: ${token ? '***' : 'none'}`)
     
     if (!this.clients.has(clientKey)) {
       const clientOptions = {
@@ -75,8 +87,12 @@ class GitHubAdapter {
         private: repo.private,
         permissions: {
           read: true,
-          write: repo.permissions?.push || false,
-          admin: repo.permissions?.admin || false
+          // GitHub API中push权限表示可以推送代码（写入权限）
+          write: Boolean(repo.permissions?.push || repo.permissions?.maintain || repo.permissions?.admin),
+          admin: Boolean(repo.permissions?.admin),
+          // 添加详细权限信息用于调试
+          details: repo.permissions,
+          owner: repo.owner.login
         },
         lastUpdated: repo.updated_at
       }
@@ -362,6 +378,142 @@ class GitHubAdapter {
       logger.error(`[GitHubAdapter] 获取用户信息失败: ${error.message}`)
       throw error
     }
+  }
+
+  /**
+   * 创建或更新文件
+   * @param {Object} repoConfig - 仓库配置
+   * @param {string} path - 文件路径
+   * @param {string} content - 文件内容
+   * @param {string} message - 提交信息
+   * @param {Object} options - 选项
+   * @returns {Promise<Object>} 操作结果
+   */
+  async createOrUpdateFile(repoConfig, path, content, message, options = {}) {
+    try {
+      const client = this.getClient(repoConfig)
+      const branch = options.branch || repoConfig.branch || 'main'
+
+      // 清理路径：移除尾部斜杠，确保符合GitHub API格式
+      const cleanPath = path.replace(/\/$/, '')
+
+      // 检查文件是否已存在
+      let existingFile = null
+      try {
+        const { data } = await client.rest.repos.getContent({
+          owner: repoConfig.owner,
+          repo: repoConfig.name,
+          path: cleanPath,
+          ref: branch
+        })
+        existingFile = data
+      } catch (error) {
+        if (error.status !== 404) {
+          throw error
+        }
+        // 文件不存在，继续创建
+      }
+
+      // 编码内容为Base64
+      const encodedContent = Buffer.from(content, 'utf-8').toString('base64')
+
+      const requestData = {
+        owner: repoConfig.owner,
+        repo: repoConfig.name,
+        path: cleanPath,
+        message: message,
+        content: encodedContent,
+        branch: branch
+      }
+
+      // 如果文件已存在，需要提供SHA
+      if (existingFile) {
+        requestData.sha = existingFile.sha
+      }
+
+      const { data } = await client.rest.repos.createOrUpdateFileContents(requestData)
+
+      logger.info(`[GitHubAdapter] ${existingFile ? '更新' : '创建'}文件成功: ${repoConfig.owner}/${repoConfig.name}/${cleanPath}`)
+
+      return {
+        success: true,
+        action: existingFile ? 'updated' : 'created',
+        path: cleanPath,
+        sha: data.content.sha,
+        commit: {
+          sha: data.commit.sha,
+          message: data.commit.message,
+          url: data.commit.html_url
+        }
+      }
+    } catch (error) {
+      logger.error(`[GitHubAdapter] 创建/更新文件失败 ${repoConfig.owner}/${repoConfig.name}/${path}: ${error.message}`)
+      throw error
+    }
+  }
+
+  /**
+   * 批量上传文件
+   * @param {Object} repoConfig - 仓库配置
+   * @param {Array} files - 文件列表 [{path, content, message}]
+   * @param {Object} options - 选项
+   * @returns {Promise<Object>} 批量操作结果
+   */
+  async uploadFiles(repoConfig, files, options = {}) {
+    const results = {
+      success: [],
+      failed: [],
+      total: files.length
+    }
+
+    const branch = options.branch || repoConfig.branch || 'main'
+    const baseMessage = options.baseMessage || 'Upload role files via PromptX'
+
+    logger.info(`[GitHubAdapter] 开始批量上传 ${files.length} 个文件到 ${repoConfig.owner}/${repoConfig.name}@${branch}`)
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const progress = `(${i + 1}/${files.length})`
+
+      try {
+        logger.debug(`[GitHubAdapter] 上传文件 ${progress}: ${file.path}`)
+
+        const message = file.message || `${baseMessage}: ${file.path}`
+        const result = await this.createOrUpdateFile(
+          repoConfig,
+          file.path,
+          file.content,
+          message,
+          { branch }
+        )
+
+        results.success.push({
+          path: file.path,
+          action: result.action,
+          sha: result.sha,
+          commit: result.commit
+        })
+
+        logger.info(`[GitHubAdapter] 文件上传成功 ${progress}: ${file.path} (${result.action})`)
+
+      } catch (error) {
+        logger.error(`[GitHubAdapter] 上传文件失败 ${progress} ${file.path}: ${error.message}`)
+        results.failed.push({
+          path: file.path,
+          error: error.message,
+          status: error.status || 'unknown'
+        })
+      }
+
+      // 添加小延迟避免API限制
+      if (i < files.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    }
+
+    logger.info(`[GitHubAdapter] 批量上传完成: ${results.success.length} 成功, ${results.failed.length} 失败`)
+
+    return results
   }
 
   /**
